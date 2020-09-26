@@ -1,0 +1,349 @@
+#!/usr/bin/env ruby
+
+require 'droplet_kit'
+require 'net/http'
+require 'tty-prompt'
+require 'yaml'
+
+def client
+  osx_file = File.expand_path('~/Library/Application Support/doctl/config.yaml')
+  linux_file = File.expand_path('~/.config/doctl/config.yaml')
+  access_token = nil
+
+  if File.file?(osx_file)
+    contents = YAML.load_file(osx_file)
+    access_token = contents["access-token"]
+  elsif File.file?(linux_file)
+    contents = YAML.load_file(linux_file)
+    access_token = contents["access-token"]
+  end
+
+  access_token = access_token.nil? ? ENV['DIGITALOCEAN_ACCESS_TOKEN']: access_token
+
+  if access_token.nil?
+    puts "No access token set. Please set it under the environmental variable DIGITALOCEAN_ACCESS_TOKEN or by running `doctl auth init`"
+    exit
+  else
+    client = DropletKit::Client.new(access_token: access_token, user_agent: 'dofire')
+  end
+
+end
+
+def prompt
+  prompt = TTY::Prompt.new
+end
+
+def firewalls
+  firewalls = client.firewalls.all
+end
+
+def list_firewalls()
+  selected = prompt.select("Choose a firewall") do |menu|
+    firewalls.each do |firewall|
+      menu.choice firewall.name.to_s, value: firewall
+    end
+  end
+  selected[:value]
+end
+
+def list_rules(firewall)
+  selected = prompt.select("Choose a rule to edit") do |menu|
+    menu.choice '<- Go Back', value: 'back'
+    firewall.inbound_rules.each do |rule|
+      menu.choice "Inbound #{rule.protocol.to_s} #{rule.ports.to_s}", value: rule
+    end
+    firewall.outbound_rules.each do |rule|
+      menu.choice "Outbound #{rule.protocol.to_s} #{rule.ports.to_s}", value: rule
+    end
+    menu.choice 'Exit Program', value: 'exit'
+  end
+  selected[:value]
+end
+
+def choose_firewall_action(selected_firewall)
+  action = prompt.select("Choose an action (firewall: #{selected_firewall.name.to_s})") do |menu| 
+    menu.choice '<- Go Back', value: 'back'
+    menu.choice 'Add Rule', value: 'add'
+    menu.choice 'Edit Rule', value: 'edit'
+    menu.choice 'Remove Rule', value: 'remove'
+    menu.choice 'Exit Program', value: 'exit'
+  end
+end
+
+
+def current_ip
+  http = Net::HTTP.new('ifconfig.pro', 80)
+  req = Net::HTTP::Get.new('/', {'User-Agent' => 'curl/7.37.0'})
+  response = http.request(req)
+  response.body.to_s.strip
+end
+
+def choose_rule_action(selected_rule)
+  if selected_rule.to_s == 'back' or selected_rule.to_s == 'exit'
+    {
+      :value => selected_rule
+    }
+  else
+    action = prompt.select("Choose an action (#{selected_rule.protocol.to_s} #{selected_rule.ports.to_s}") do |menu| 
+      menu.choice '<- Go Back', value: 'back'
+      menu.choice "Add Current IP Address (#{current_ip})", value: 'add_my_ip'
+      menu.choice "Allow All IPs", value: 'allow_all'
+      menu.choice 'Add IP Address', value: 'add_ip'
+      menu.choice 'Remove IP Address', value: 'remove_ip'
+      menu.choice 'Exit Program', value: 'exit'
+    end
+
+  end
+end
+
+def fix_default_outbound_rules_bug(rules)
+  rules.each_with_index do |rule, i|
+    if rule.protocol == 'icmp'
+      rules[i].ports = ''
+    elsif rule.ports == '0'
+      rules[i].ports = 'all'
+    end
+  end
+  return rules
+end
+
+def handle_rule_action(action, selected_firewall, rule)
+  case action[:value]
+  when 'add_my_ip'
+    ip = current_ip
+
+    inbound_index = selected_firewall.inbound_rules.index { |r|
+      r.equal? rule
+    } 
+
+    if inbound_index.nil?
+      outbound_index = selected_firewall.outbound_rules.index { |r|
+        r.equal? rule
+      } 
+
+      if rule["destinations"]["addresses"].include? ip
+        puts 'Your IP Address is already on this rule'
+        return
+      else
+        rule[:sources]["addresses"].push(ip)
+        selected_firewall.outbound_rules[outbound_index] = rule
+      end
+    else
+      if rule[:sources]["addresses"].include? ip
+        puts 'Your IP Address is already on this rule'
+        return
+      else
+        rule[:sources]["addresses"].push(ip)
+        selected_firewall.inbound_rules[inbound_index] = rule
+      end
+    end
+
+    selected_firewall.outbound_rules = fix_default_outbound_rules_bug(selected_firewall.outbound_rules)
+    client.firewalls.update(selected_firewall, id: selected_firewall.id)
+
+    puts "#{ip} added to #{selected_firewall.name} firewall"
+
+    rule_action = choose_rule_action(rule)
+    handle_rule_action(rule_action, selected_firewall, rule)
+
+  when 'allow_all'
+    inbound_index = selected_firewall.inbound_rules.index { |r|
+      r.equal? rule
+    } 
+
+    if inbound_index.nil?
+      outbound_index = selected_firewall.outbound_rules.index { |r|
+        r.equal? rule
+      } 
+      rule["destinations"]["addresses"].push("0.0.0.0/0")
+      rule["destinations"]["addresses"].push("::/0")
+      selected_firewall.outbound_rules[outbound_index] = rule
+    else
+      rule[:sources]["addresses"].push("0.0.0.0/0")
+      rule[:sources]["addresses"].push("::/0")
+      selected_firewall.inbound_rules[inbound_index] = rule
+    end
+
+    selected_firewall.outbound_rules = fix_default_outbound_rules_bug(selected_firewall.outbound_rules)
+    client.firewalls.update(selected_firewall, id: selected_firewall.id)
+
+    puts "0.0.0.0/0 and ::/0 added"
+
+    rule_action = choose_rule_action(rule)
+    handle_rule_action(rule_action, selected_firewall, rule)
+
+  when 'add_ip'
+    ip = prompt.ask("Enter an IP Address: ") 
+
+    inbound_index = selected_firewall.inbound_rules.index { |r|
+      r.equal? rule
+    } 
+
+    if inbound_index.nil?
+      outbound_index = selected_firewall.outbound_rules.index { |r|
+        r.equal? rule
+      } 
+
+      if rule["destinations"]["addresses"].include? ip
+        puts 'Your IP Address is already on this rule'
+        return
+      else
+        rule[:sources]["addresses"].push(ip)
+        selected_firewall.outbound_rules[outbound_index] = rule
+      end
+    else
+      if rule[:sources]["addresses"].include? ip
+        puts 'Your IP Address is already on this rule'
+        return
+      else
+        rule[:sources]["addresses"].push(ip)
+        selected_firewall.inbound_rules[inbound_index] = rule
+      end
+    end
+    selected_firewall.outbound_rules = fix_default_outbound_rules_bug(selected_firewall.outbound_rules)
+    client.firewalls.update(selected_firewall, id: selected_firewall.id)
+
+    puts "#{ip} added to #{selected_firewall.name} firewall"
+
+    rule_action = choose_rule_action(rule)
+    handle_rule_action(rule_action, selected_firewall, rule)
+
+  when 'remove_ip'
+
+    inbound_index = selected_firewall.inbound_rules.index { |r|
+      r.equal? rule
+    } 
+
+    outbound_index = selected_firewall.outbound_rules.index { |r|
+      r.equal? rule
+    } 
+
+    selected_ip = prompt.select("Select an IP address to remove") do |menu|
+      menu.choice '<- Go Back', value: 'back'
+
+      if inbound_index.nil?
+          selected_firewall.outbound_rules[outbound_index]["destinations"]["addresses"].each do |ip|
+            menu.choice "#{ip}", value: ip
+          end
+      else
+          selected_firewall.inbound_rules[inbound_index][:sources]["addresses"].each do |ip|
+            menu.choice "#{ip}", value: ip
+          end
+      end
+      menu.choice 'Exit Program', value: 'exit'
+    end
+
+    if selected_ip[:value] == 'back'
+      selected_rule = list_rules(selected_firewall)
+      rule_action = choose_rule_action(selected_rule)
+      handle_rule_action(rule_action, selected_firewall, selected_rule)
+    else
+      if inbound_index.nil?
+        selected_firewall.outbound_rules[outbound_index]["destinations"]["addresses"].delete(selected_ip[:value])
+      else
+        selected_firewall.inbound_rules[inbound_index][:sources]["addresses"].delete(selected_ip[:value])
+      end
+
+      selected_firewall.outbound_rules = fix_default_outbound_rules_bug(selected_firewall.outbound_rules)
+      client.firewalls.update(selected_firewall, id: selected_firewall.id)
+      
+      puts "#{selected_ip[:value]} removed"
+
+      rule_action = choose_rule_action(rule)
+      handle_rule_action(rule_action, selected_firewall, rule)
+      
+    end
+
+  when 'back'
+    system("clear")
+    selected_rule = list_rules(selected_firewall)
+    if selected_rule.to_s == 'back'
+      action = choose_firewall_action(selected_firewall)
+      handle_firewall_action(action, selected_firewall)
+    else
+      rule_action = choose_rule_action(selected_rule)
+      handle_rule_action(rule_action, selected_firewall, selected_rule)
+    end
+  when 'exit'
+    exit
+  end
+end
+
+def handle_firewall_action(action, selected_firewall)
+  case action[:value]
+  when 'add'
+    type = prompt.ask("Do you want to create an Inbound or Outbound rule?(i/o) ")
+    protocol = prompt.ask("Choose a protocol (tcp/udp): ")
+    port = prompt.ask("Enter port or port range: ")
+    ips = prompt.ask("Enter IP addresses separated by commas: ")
+
+    type = type.downcase
+    if type == 'i' or type == 'inbound' or type == 'in'
+      inbound_rule = DropletKit::FirewallInboundRule.new(
+        protocol: protocol,
+        ports: port,
+        sources: {
+          addresses: ips.split(',') 
+        }
+      )
+
+      client.firewalls.add_rules(inbound_rules: [inbound_rule], id: selected_firewall.id)
+    else
+      outbound_rule = DropletKit::FirewallOutboundRule.new(
+        protocol: protocol,
+        ports: port,
+        destinations: {
+          addresses: ips.split(',')
+        }
+      )
+      client.firewalls.add_rules(outbound_rules: [outbound_rule], id: selected_firewall.id)
+    end
+
+    puts "New rule added"
+
+  when 'edit'
+    selected_rule = list_rules(selected_firewall)
+    if selected_rule.to_s == 'back'
+      action = choose_firewall_action(selected_firewall)
+      handle_firewall_action(action, selected_firewall)
+    else
+      rule_action = choose_rule_action(selected_rule)
+      handle_rule_action(rule_action, selected_firewall, selected_rule)
+    end
+  when 'remove'
+      selected_rule = list_rules(selected_firewall)
+
+      if selected_rule.ports == '0'
+        selected_rule.ports = 'all'
+      end
+
+    if selected_rule.to_s == 'back'
+      action = choose_firewall_action(selected_firewall)
+      handle_firewall_action(action, selected_firewall)
+    elsif selected_rule.to_s == 'exit'
+      exit
+    else
+      if selected_rule.instance_of? DropletKit::FirewallInboundRule
+        client.firewalls.remove_rules(inbound_rules: [selected_rule], id: selected_firewall.id)
+      else
+        client.firewalls.remove_rules(outbound_rules: [selected_rule], id: selected_firewall.id)
+      end
+
+      puts "Rule removed"
+    end
+  when 'back'
+    system("clear")
+    selected_firewall = list_firewalls()
+    action = choose_firewall_action(selected_firewall)
+    handle_firewall_action(action, selected_firewall)
+  when 'exit'
+    exit
+  end
+
+end
+
+#system("clear")
+
+selected_firewall = list_firewalls()
+action = choose_firewall_action(selected_firewall)
+handle_firewall_action(action, selected_firewall)

@@ -1,0 +1,56 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    addressable (2.7.0)
+      public_suffix (>= 2.0.2, < 5.0)
+    axiom-types (0.1.1)
+      descendants_tracker (~> 0.0.4)
+      ice_nine (~> 0.11.0)
+      thread_safe (~> 0.3, >= 0.3.1)
+    coercible (1.0.0)
+      descendants_tracker (~> 0.0.1)
+    descendants_tracker (0.0.4)
+      thread_safe (~> 0.3, >= 0.3.1)
+    droplet_kit (3.7.0)
+      faraday (~> 0.15)
+      kartograph (~> 0.2.3)
+      resource_kit (~> 0.1.5)
+      virtus (~> 1.0.3)
+    equalizer (0.0.11)
+    faraday (0.17.3)
+      multipart-post (>= 1.2, < 3)
+    ice_nine (0.11.2)
+    kartograph (0.2.8)
+    multipart-post (2.1.1)
+    pastel (0.8.0)
+      tty-color (~> 0.5)
+    public_suffix (4.0.6)
+    resource_kit (0.1.7)
+      addressable (>= 2.3.6, < 3.0.0)
+    thread_safe (0.3.6)
+    tty-color (0.5.2)
+    tty-cursor (0.7.1)
+    tty-prompt (0.22.0)
+      pastel (~> 0.8)
+      tty-reader (~> 0.8)
+    tty-reader (0.8.0)
+      tty-cursor (~> 0.7)
+      tty-screen (~> 0.8)
+      wisper (~> 2.0)
+    tty-screen (0.8.1)
+    virtus (1.0.5)
+      axiom-types (~> 0.1)
+      coercible (~> 1.0)
+      descendants_tracker (~> 0.0, >= 0.0.3)
+      equalizer (~> 0.0, >= 0.0.9)
+    wisper (2.0.1)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  droplet_kit
+  tty-prompt (~> 0.22.0)
+
+BUNDLED WITH
+   2.1.4
